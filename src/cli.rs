@@ -77,6 +77,11 @@ pub fn load_runtime_config(opts: &CliOpts) -> Result<RuntimeConfig> {
         RuntimeConfig::default()
     };
 
+    // Set the default project name
+    if cfg.project_name.is_empty() {
+        cfg.project_name = "whitelabel".to_string();
+    }
+
     cfg.log_format_json = opts.logs_json || cfg.log_format_json;
     cfg.log_level = opts.verbosity.unwrap_or(cfg.log_level);
 

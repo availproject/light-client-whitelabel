@@ -52,7 +52,7 @@ async fn run(
     execution_id: Uuid,
 ) -> Result<()> {
     let version = clap::crate_version!();
-    info!("Running Avail Light Client version: {version}.");
+    info!("Running Light Client version: {version}.");
     info!("Using config: {cfg:?}");
     info!(
         "Avail ss58 address: {}, public key: {}",
