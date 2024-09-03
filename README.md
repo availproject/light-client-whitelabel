@@ -1,4 +1,4 @@
-# White-label light client for the Avail network
+# White label light client for the Avail network
 
 ## Installation
 
