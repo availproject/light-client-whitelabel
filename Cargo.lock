@@ -944,8 +944,8 @@ dependencies = [
 
 [[package]]
 name = "avail-light-core"
-version = "0.0.0"
-source = "git+https://github.com/availproject/avail-light.git?branch=main#1d7ca6155c0f199c33aaeeffab727904052d2958"
+version = "1.0.0"
+source = "git+https://github.com/availproject/avail-light.git?tag=avail-light-core-v1.0.0#67504c1f43e17d5d54bb9e38b9ece10188209c08"
 dependencies = [
  "async-std",
  "async-stream",
@@ -4932,6 +4932,7 @@ dependencies = [
  "hex-literal",
  "libp2p",
  "proptest",
+ "serde",
  "sp-core 28.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "strip-ansi-escapes",
  "test-case",

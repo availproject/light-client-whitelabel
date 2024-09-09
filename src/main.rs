@@ -1,19 +1,25 @@
+#![doc = include_str!("../README.md")]
+
 use crate::cli::CliOpts;
 use avail_light_core::{
     api,
     consts::EXPECTED_SYSTEM_VERSION,
     data::{self, ClientIdKey, Database, IsFinalitySyncedKey, IsSyncedKey, LatestHeaderKey, DB},
-    light_client, maintenance,
+    light_client::{self, OutputEvent as LcEvent},
+    maintenance::{self, OutputEvent as MaintenanceEvent},
     network::{
         self,
-        p2p::{self},
+        p2p::{self, OutputEvent as P2pEvent, BOOTSTRAP_LIST_EMPTY_MESSAGE},
         rpc, Network,
     },
     shutdown::Controller,
     sync_client::SyncClient,
     sync_finality::SyncFinality,
-    telemetry::{self, MetricCounter, Metrics},
-    types::{load_or_init_suri, IdentityConfig, MaintenanceConfig, RuntimeConfig, Uuid},
+    telemetry::{self, MetricCounter, MetricValue, Metrics},
+    types::{
+        load_or_init_suri, Delay, IdentityConfig, MaintenanceConfig, MultiaddrConfig, SecretKey,
+        Uuid,
+    },
     utils::{default_subscriber, install_panic_hooks, json_subscriber, spawn_in_span},
 };
 use avail_rust::{
@@ -22,13 +28,19 @@ use avail_rust::{
     sp_core::blake2_128,
 };
 use clap::Parser;
-use cli::load_runtime_config;
 use color_eyre::{
     eyre::{eyre, WrapErr},
     Result,
 };
+use config::RuntimeConfig;
 use std::{fs, path::Path, sync::Arc};
-use tokio::sync::{broadcast, mpsc};
+use tokio::{
+    select,
+    sync::{
+        broadcast,
+        mpsc::{self, UnboundedReceiver},
+    },
+};
 use tracing::{error, info, span, trace, warn, Level};
 
 #[cfg(feature = "network-analysis")]
@@ -41,7 +53,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-mod cli;
+/// Light Client for Avail Blockchain
 
 async fn run(
     cfg: RuntimeConfig,
@@ -52,7 +64,7 @@ async fn run(
     execution_id: Uuid,
 ) -> Result<()> {
     let version = clap::crate_version!();
-    info!("Running Light Client version: {version}.");
+    info!("Running Avail Light Client version: {version}.");
     info!("Using config: {cfg:?}");
     info!(
         "Avail ss58 address: {}, public key: {}",
@@ -75,18 +87,16 @@ async fn run(
         ),
     ];
 
-    let ot_metrics = Arc::new(
-        telemetry::otlp::initialize(
-            metric_attributes,
-            cfg.project_name.clone(),
-            &cfg.origin,
-            &cfg.libp2p.kademlia.operation_mode.into(),
-            cfg.otel.clone(),
-        )
-        .wrap_err("Unable to initialize OpenTelemetry service")?,
-    );
+    let mut metrics = telemetry::otlp::initialize(
+        metric_attributes.clone(),
+        cfg.project_name.clone(),
+        &cfg.origin,
+        cfg.libp2p.kademlia.operation_mode.into(),
+        cfg.otel.clone(),
+    )
+    .wrap_err("Unable to initialize OpenTelemetry service")?;
 
-    let (p2p_client, p2p_event_loop, event_receiver) = p2p::init(
+    let (p2p_client, p2p_event_loop, p2p_event_receiver) = p2p::init(
         cfg.libp2p.clone(),
         cfg.project_name.clone(),
         id_keys,
@@ -98,14 +108,6 @@ async fn run(
         db.clone(),
     )
     .await?;
-
-    let metrics_clone = ot_metrics.clone();
-    let shutdown_clone = shutdown.clone();
-    tokio::spawn(async move {
-        shutdown_clone
-            .with_cancel(metrics_clone.handle_event_stream(event_receiver))
-            .await
-    });
 
     spawn_in_span(shutdown.with_cancel(p2p_event_loop.run()));
 
@@ -201,7 +203,7 @@ async fn run(
     // Spawn tokio task which runs one http server for handling RPC
     let server = api::server::Server {
         db: db.clone(),
-        cfg: cfg.clone(),
+        cfg: (&cfg).into(),
         identity_cfg,
         version: format!("v{}", clap::crate_version!()),
         network_version: EXPECTED_SYSTEM_VERSION[0].to_string(),
@@ -210,7 +212,7 @@ async fn run(
         shutdown: shutdown.clone(),
         p2p_client: p2p_client.clone(),
     };
-    spawn_in_span(shutdown.with_cancel(server.bind()));
+    spawn_in_span(shutdown.with_cancel(server.bind(cfg.api.clone())));
 
     let (block_tx, block_rx) = broadcast::channel::<avail_light_core::types::BlockVerified>(1 << 7);
 
@@ -285,10 +287,9 @@ async fn run(
     }
 
     let static_config_params: MaintenanceConfig = (&cfg).into();
-    let (maintenance_sender, _) = mpsc::channel::<maintenance::OutputEvent>(1000);
+    let (maintenance_sender, maintenance_receiver) = mpsc::unbounded_channel::<MaintenanceEvent>();
     spawn_in_span(shutdown.with_cancel(maintenance::run(
         p2p_client.clone(),
-        ot_metrics.clone(),
         block_rx,
         static_config_params,
         shutdown.clone(),
@@ -301,20 +302,213 @@ async fn run(
     };
 
     let light_network_client = network::new(p2p_client, rpc_client, pp, cfg.disable_rpc);
-    let (lc_sender, _) = mpsc::channel::<light_client::OutputEvent>(1000);
+    let (lc_sender, lc_receiver) = mpsc::unbounded_channel::<LcEvent>();
     spawn_in_span(shutdown.with_cancel(light_client::run(
         db.clone(),
         light_network_client,
-        (&cfg).into(),
-        ot_metrics.clone(),
+        cfg.confidence,
+        Delay(cfg.block_processing_delay),
         channels,
         shutdown.clone(),
         lc_sender,
     )));
 
-    ot_metrics.count(MetricCounter::Starts).await;
+    metrics.count(MetricCounter::Starts);
+
+    spawn_in_span(shutdown.with_cancel(handle_events(
+        metrics,
+        p2p_event_receiver,
+        maintenance_receiver,
+        lc_receiver,
+    )));
 
     Ok(())
+}
+
+mod cli;
+mod config;
+
+pub fn load_runtime_config(opts: &CliOpts) -> Result<RuntimeConfig> {
+    let mut cfg = if let Some(config_path) = &opts.config {
+        fs::metadata(config_path).map_err(|_| eyre!("Provided config file doesn't exist."))?;
+        confy::load_path(config_path)
+            .wrap_err(format!("Failed to load configuration from {}", config_path))?
+    } else {
+        RuntimeConfig::default()
+    };
+
+    cfg.log_format_json = opts.logs_json || cfg.log_format_json;
+    cfg.log_level = opts.verbosity.unwrap_or(cfg.log_level);
+
+    // Flags override the config parameters
+    if let Some(network) = &opts.network {
+        let bootstrap = (network.bootstrap_peer_id(), network.bootstrap_multiaddr());
+        cfg.rpc.full_node_ws = network.full_node_ws();
+        cfg.libp2p.bootstraps = vec![MultiaddrConfig::PeerIdAndMultiaddr(bootstrap)];
+        cfg.otel.ot_collector_endpoint = network.ot_collector_endpoint().to_string();
+        cfg.genesis_hash = network.genesis_hash().to_string();
+    }
+
+    if let Some(port) = opts.port {
+        cfg.libp2p.port = port;
+    }
+    if let Some(http_port) = opts.http_server_port {
+        cfg.api.http_server_port = http_port;
+    }
+    if let Some(webrtc_port) = opts.webrtc_port {
+        cfg.libp2p.webrtc_port = webrtc_port;
+    }
+    if let Some(avail_path) = &opts.avail_path {
+        cfg.avail_path = avail_path.to_string();
+    }
+    cfg.sync_finality_enable |= opts.finality_sync_enable;
+    cfg.app_id = opts.app_id.or(cfg.app_id);
+    cfg.libp2p.ws_transport_enable |= opts.ws_transport_enable;
+    if let Some(secret_key) = &opts.private_key {
+        cfg.libp2p.secret_key = Some(SecretKey::Key {
+            key: secret_key.to_string(),
+        });
+    }
+
+    if let Some(seed) = &opts.seed {
+        cfg.libp2p.secret_key = Some(SecretKey::Seed {
+            seed: seed.to_string(),
+        })
+    }
+
+    if let Some(client_alias) = &opts.client_alias {
+        cfg.client_alias = Some(client_alias.clone())
+    }
+
+    if cfg.libp2p.bootstraps.is_empty() {
+        return Err(eyre!("{BOOTSTRAP_LIST_EMPTY_MESSAGE}"));
+    }
+
+    Ok(cfg)
+}
+
+async fn handle_events(
+    mut metrics: impl Metrics,
+    mut p2p_receiver: UnboundedReceiver<P2pEvent>,
+    mut maintenance_receiver: UnboundedReceiver<MaintenanceEvent>,
+    mut lc_receiver: UnboundedReceiver<LcEvent>,
+) {
+    loop {
+        select! {
+                Some(p2p_event) = p2p_receiver.recv() => {
+                    match p2p_event {
+                        P2pEvent::Count => {
+                            metrics.count(MetricCounter::EventLoopEvent);
+                        },
+                        P2pEvent::IncomingGetRecord => {
+                            metrics.count(MetricCounter::IncomingGetRecord);
+                        },
+                        P2pEvent::IncomingPutRecord => {
+                            metrics.count(MetricCounter::IncomingPutRecord);
+                        },
+                        P2pEvent::KadModeChange(mode) => {
+                            metrics.update_operating_mode(mode);
+                        },
+                        P2pEvent::Ping(rtt) => {
+                            metrics.record(MetricValue::DHTPingLatency(rtt.as_millis() as f64));
+                        },
+                        P2pEvent::IncomingConnection => {
+                            metrics.count(MetricCounter::IncomingConnections);
+                        },
+                        P2pEvent::IncomingConnectionError => {
+                            metrics.count(MetricCounter::IncomingConnectionErrors);
+                        },
+                        P2pEvent::MultiaddressUpdate(address) => {
+                            metrics.update_multiaddress(address);
+                        },
+                        P2pEvent::EstablishedConnection => {
+                            metrics.count(MetricCounter::EstablishedConnections);
+                        },
+                        P2pEvent::OutgoingConnectionError => {
+                            metrics.count(MetricCounter::OutgoingConnectionErrors);
+                        },
+                        P2pEvent::PutRecord { block_num, records } => {
+                            metrics.handle_new_put_record(block_num, records);
+                        },
+                        P2pEvent::PutRecordSuccess {
+                            record_key,
+                            query_stats,
+                        } => {
+                            if let Err(error) = metrics.handle_successful_put_record(record_key, query_stats){
+                                error!("Could not handle Successful PUT Record event properly: {error}");
+                            };
+                        },
+                        P2pEvent::PutRecordFailed {
+                            record_key,
+                            query_stats,
+                        } => {
+                            if let Err(error) = metrics.handle_failed_put_record(record_key, query_stats) {
+                                error!("Could not handle Failed PUT Record event properly: {error}");
+                            };
+                        },
+                    }
+                }
+            Some(maintenance_event) = maintenance_receiver.recv() => {
+                match maintenance_event {
+                    MaintenanceEvent::FlushMetrics(block_num) => {
+                        if let Err(error) = metrics.flush() {
+                            error!(
+                                block_num,
+                                "Could not handle Flush Maintenance event properly: {error}"
+                            );
+                        } else {
+                            info!(block_num, "Flushing metrics finished");
+                        };
+                    },
+                    MaintenanceEvent::RecordStats {
+                        connected_peers,
+                        block_confidence_treshold,
+                        replication_factor,
+                        query_timeout,
+                    } => {
+                        metrics.record(MetricValue::DHTConnectedPeers(connected_peers));
+                        metrics.record(MetricValue::BlockConfidenceThreshold(block_confidence_treshold));
+                        metrics.record(MetricValue::DHTReplicationFactor(replication_factor));
+                        metrics.record(MetricValue::DHTQueryTimeout(query_timeout));
+                    },
+                    MaintenanceEvent::CountUps => {
+                        metrics.count(MetricCounter::Up);
+                    },
+                }
+            }
+            Some(lc_event) = lc_receiver.recv() => {
+                match lc_event {
+                    LcEvent::RecordBlockProcessingDelay(delay) => {
+                        metrics.record(MetricValue::BlockProcessingDelay(delay));
+                    },
+                    LcEvent::CountSessionBlocks => {
+                        metrics.count(MetricCounter::SessionBlocks);
+                    },
+                    LcEvent::RecordBlockHeight(block_num) => {
+                        metrics.record(MetricValue::BlockHeight(block_num));
+                    },
+                    LcEvent::RecordDHTStats {
+                        fetched, fetched_percentage, fetch_duration
+                    } => {
+                        metrics.record(MetricValue::DHTFetched(fetched));
+                        metrics.record(MetricValue::DHTFetchedPercentage(fetched_percentage));
+                        metrics.record(MetricValue::DHTFetchDuration(fetch_duration));
+                    },
+                    LcEvent::RecordRPCFetched(fetched) => {
+                        metrics.record(MetricValue::RPCFetched(fetched));
+                    },
+                    LcEvent::RecordRPCFetchDuration(duration) => {
+                        metrics.record(MetricValue::RPCFetchDuration(duration));
+                    }
+                    LcEvent::RecordBlockConfidence(confidence) => {
+                        metrics.record(MetricValue::BlockConfidence(confidence));
+                    }
+                }
+            }
+            // break the loop if all channels are closed
+            else => break,
+        }
+    }
 }
 
 #[tokio::main]
