@@ -2,9 +2,35 @@
 
 ## Installation
 
-Download the Light Client from the [releases](https://github.com/availproject/light-client-whitelabel/releases) page.
+Download the latest Light Client build from the [releases](https://github.com/availproject/light-client-whitelabel/releases) page.
 
-## Get started
+## Running
 
-- How to run a [light client](https://docs.availproject.org/docs/operate-a-node/run-a-light-client/0010-light-client).
+The easiest way to connect the light client to Avail mainnet is using the following command.
+
+```bash
+./light-client-whitelabel -n mainnet
+```
+
+The rest of the CLI options can be found [here](https://github.com/availproject/avail-light/blob/main/client/README.md#options).
+
+For logging and metrics project name can be set in two ways:
+
+1. Using the `project-name` CLI option:
+
+```bash
+./light-client-whitelabel -n mainnet --project-name example_project
+```
+
+2. Using the configuration file with the `project_name` parameter.
+
+```toml
+project_name = "example_project"
+```
+
+The rest of the configuration reference can be found [here](https://github.com/availproject/avail-light/blob/main/client/README.md#configuration-reference).
+
+## Additional information
+
+- Light client [overview](https://docs.availproject.org/docs/operate-a-node/run-a-light-client/Overview).
 - Detailed [readme](https://github.com/availproject/avail-light/tree/main/client).
