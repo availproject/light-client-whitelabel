@@ -337,6 +337,10 @@ pub fn load_runtime_config(opts: &CliOpts) -> Result<RuntimeConfig> {
         RuntimeConfig::default()
     };
 
+    if let Some(project_name) = &opts.project_name {
+        cfg.project_name = project_name.to_owned();
+    }
+
     cfg.log_format_json = opts.logs_json || cfg.log_format_json;
     cfg.log_level = opts.verbosity.unwrap_or(cfg.log_level);
 

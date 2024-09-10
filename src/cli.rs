@@ -5,6 +5,9 @@ use tracing::Level;
 #[derive(Parser)]
 #[command(version)]
 pub struct CliOpts {
+    /// Project name for the light client
+    #[arg(long, value_name = "project-name")]
+    pub project_name: Option<String>,
     /// Path to the yaml configuration file
     #[arg(short, long, value_name = "FILE")]
     pub config: Option<String>,
