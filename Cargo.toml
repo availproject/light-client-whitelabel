@@ -35,3 +35,11 @@ test-case = "3.2.1"
 network-analysis = ["avail-light-core/network-analysis"]
 rocksdb = ["avail-light-core/rocksdb"]
 default = ["rocksdb"]
+
+[profile.release]
+incremental = false
+
+[profile.maxperf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
