@@ -5,7 +5,7 @@ edition = "2021"
 description = "Avail Whitelabel Light Client"
 
 [dependencies]
-avail-light-core = { git = "https://github.com/availproject/avail-light.git", tag = "avail-light-core-v1.0.0" }
+avail-light-core = { git = "https://github.com/availproject/avail-light.git", tag = "avail-light-core-v1.0.1" }
 avail-rust = { git = "https://github.com/availproject/avail.git", branch = "main" }
 
 better-panic = "0.3.0"
@@ -13,7 +13,7 @@ clap = { version = "4.4.4", features = ["derive", "cargo"] }
 color-eyre = "0.6.2"
 confy = "0.4.0"
 hex = "0.4.3"
-libp2p = { version = "0.53.2", features = ["kad", "identify", "ping", "mdns", "autonat", "relay", "dcutr", "upnp", "noise", "yamux", "dns", "metrics", "tokio", "macros", "tcp", "quic", "serde", "websocket"] }
+libp2p = { version = "0.54", features = ["kad", "identify", "ping", "mdns", "autonat", "relay", "dcutr", "upnp", "noise", "yamux", "dns", "metrics", "tokio", "macros", "tcp", "quic", "serde", "websocket"] }
 serde = { version = "1.0", features = ["derive"] }
 sp-core = { version = "28.0.0", features = ["serde"] }
 strip-ansi-escapes = "0.2.0"
