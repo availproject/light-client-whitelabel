@@ -54,6 +54,7 @@ jobs:
               $env:Path += ";$env:USERPROFILE\.cargo\bin"
               rustup target add x86_64-pc-windows-msvc
 
+
     steps:
       - uses: actions/checkout@v4
       - name: Install cargo and setup
@@ -103,7 +104,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
          repo_token: ${{ secrets.PAT_TOKEN }}
-         file: /home/runner/work/avail-light/avail-light/binaries/avail-light*
+         file: /home/runner/work/light-client-whitelabel/light-client-whitelabel/binaries/avail-light*
          release_name: ${{ github.ref_name }}
          tag: ${{ github.ref_name }}
          overwrite: true
