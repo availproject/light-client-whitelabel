@@ -97,7 +97,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: binaries
-          pattern: light-client-whitelabel*
+          pattern: avail-light-whitelabel*
           merge-multiple: true
 
       - name: publish binaries
