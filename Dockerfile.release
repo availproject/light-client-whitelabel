@@ -1,0 +1,30 @@
+FROM --platform=$BUILDPLATFORM ubuntu:20.04
+
+ARG TARGETARCH
+ARG BUILDPLATFORM
+
+WORKDIR /var/lib/whitelabel-client
+
+ARG WHITELABEL_TAG=v0.0.1
+
+RUN apt-get update && apt-get install -y --no-install-recommends gettext wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG WHITELABEL_LC_BIN=https://github.com/availproject/light-client-whitelabel/releases/download/avail-light-whitelabel-$WHITELABEL_TAG/avail-light-whitelabel-linux-$TARGETARCH.tar.gz
+
+RUN adduser --disabled-password --gecos "" --no-create-home --uid 1000 client \
+    && cd /tmp && wget --no-check-certificate $WHITELABEL_LC_BIN -O whitelabel-lc.tar.gz \
+    && tar -xvf whitelabel-lc.tar.gz \
+    && rm whitelabel-lc.tar.gz \
+    && mkdir -p /opt/release \
+    && mv avail-light-whitelabel-linux-amd64 /opt/release/avail-light-whitelabel \
+    && chown -R client:client /opt/release
+
+WORKDIR /opt/release
+
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh && chown client:client entrypoint.sh
+
+USER client
+
+ENTRYPOINT ["./entrypoint.sh"]
