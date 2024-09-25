@@ -90,6 +90,7 @@ jobs:
           name: ${{ matrix.output_name }}
           path: target/${{ matrix.rust_target }}/maxperf/${{ matrix.output_name }}.tar.gz
 
+
   binary_publish:
     needs: [build]
     runs-on: ubuntu-20.04
