@@ -4,8 +4,8 @@ on:
     branches:
       - '**'
     tags:
-      - 'avail-light-whitelabel-v*.*.*'
-      - 'avail-light-whitelabel-v*.*.*-*'
+      - 'light-client-whitelabel-v*.*.*'
+      - 'light-client-whitelabel-v*.*.*-*'
 
 jobs:
   build:
@@ -16,14 +16,14 @@ jobs:
           - os: ubuntu-20.04
             workspace: light-client-whitelabel
             rust_target: x86_64-unknown-linux-gnu
-            output_name: avail-light-linux-amd64
+            output_name: light-client-whitelabel-linux-amd64
             extra_setup: |
               rustup target add x86_64-unknown-linux-gnu
 
           - os: ubuntu-20.04
             workspace: light-client-whitelabel
             rust_target: aarch64-unknown-linux-gnu
-            output_name: avail-light-linux-arm64
+            output_name: light-client-whitelabel-linux-arm64
             extra_setup: |
               sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
               rustup target add aarch64-unknown-linux-gnu
@@ -33,21 +33,21 @@ jobs:
           - os: macos-14
             workspace: light-client-whitelabel
             rust_target: aarch64-apple-darwin
-            output_name: avail-light-apple-arm64
+            output_name: light-client-whitelabel-apple-arm64
             extra_setup: |
               rustup target add aarch64-apple-darwin
 
           - os: macos-13
             workspace: light-client-whitelabel
             rust_target: x86_64-apple-darwin
-            output_name: avail-light-apple-x86_64
+            output_name: light-client-whitelabel-apple-x86_64
             extra_setup: |
               rustup target add x86_64-apple-darwin
 
           - os: windows-latest
             workspace: light-client-whitelabel
             rust_target: x86_64-pc-windows-msvc
-            output_name: avail-light-x86_64-pc-windows-msvc.exe
+            output_name: light-client-whitelabel-x86_64-pc-windows-msvc.exe
             extra_setup: |
               Invoke-WebRequest -Uri https://win.rustup.rs -OutFile rustup-init.exe
               .\rustup-init.exe -y --default-toolchain stable
@@ -97,14 +97,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: binaries
-          pattern: avail-light*
+          pattern: light-client-whitelabel*
           merge-multiple: true
 
       - name: publish binaries
         uses: svenstaro/upload-release-action@v2
         with:
          repo_token: ${{ secrets.PAT_TOKEN }}
-         file: /home/runner/work/light-client-whitelabel/light-client-whitelabel/binaries/avail-light*
+         file: /home/runner/work/light-client-whitelabel/light-client-whitelabel/binaries/light-client-whitelabel*
          release_name: ${{ github.ref_name }}
          tag: ${{ github.ref_name }}
          overwrite: true
