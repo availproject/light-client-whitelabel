@@ -17,7 +17,7 @@ RUN adduser --disabled-password --gecos "" --no-create-home --uid 1000 client \
     && tar -xvf whitelabel-lc.tar.gz \
     && rm whitelabel-lc.tar.gz \
     && mkdir -p /opt/release \
-    && mv avail-light-whitelabel-$TARGETARCH /opt/release/avail-light-whitelabel \
+    && mv avail-light-whitelabel-linux-$TARGETARCH /opt/release/avail-light-whitelabel \
     && chown -R client:client /opt/release
 
 WORKDIR /opt/release
