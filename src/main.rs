@@ -20,7 +20,7 @@ use avail_light_core::{
         load_or_init_suri, Delay, IdentityConfig, MaintenanceConfig, MultiaddrConfig, SecretKey,
         Uuid,
     },
-    utils::{default_subscriber, install_panic_hooks, json_subscriber, spawn_in_span},
+    utils::{install_panic_hooks, spawn_in_span},
 };
 use avail_rust::{
     avail_core::AppId,
@@ -46,6 +46,7 @@ use tokio::{
     },
 };
 use tracing::{error, info, span, trace, warn, Level};
+use utils::{default_subscriber, json_subscriber};
 
 #[cfg(feature = "network-analysis")]
 use avail_light_core::network::p2p::analyzer;
@@ -67,8 +68,10 @@ async fn run(
     client_id: Uuid,
     execution_id: Uuid,
 ) -> Result<()> {
+    let project_name = cfg.project_name.clone();
     let version = clap::crate_version!();
-    info!("Running Avail Light Client version: {version}.");
+
+    info!("Running {project_name} Light Client version: {version}.");
     info!("Using config: {cfg:?}");
     info!(
         "Avail ss58 address: {}, public key: {}",
@@ -80,7 +83,7 @@ async fn run(
 
     let (p2p_client, p2p_event_loop, p2p_event_receiver) = p2p::init(
         cfg.libp2p.clone(),
-        cfg.project_name.clone(),
+        project_name.clone(),
         id_keys,
         version,
         &cfg.genesis_hash,
@@ -310,9 +313,8 @@ async fn run(
         ),
     ];
 
-    let metrics =
-        telemetry::otlp::initialize(cfg.project_name.clone(), &cfg.origin, cfg.otel.clone())
-            .wrap_err("Unable to initialize OpenTelemetry service")?;
+    let metrics = telemetry::otlp::initialize(project_name, &cfg.origin, cfg.otel.clone())
+        .wrap_err("Unable to initialize OpenTelemetry service")?;
 
     let mut state = ClientState::new(
         metrics,
@@ -332,6 +334,7 @@ async fn run(
 
 mod cli;
 mod config;
+mod utils;
 
 pub fn load_runtime_config(opts: &CliOpts) -> Result<RuntimeConfig> {
     let mut cfg = if let Some(config_path) = &opts.config {
