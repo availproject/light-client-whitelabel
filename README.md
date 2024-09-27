@@ -39,7 +39,7 @@ To build the docker image you can run the following command:
 Once the image is built, you can run the image by supplying params:
 
 ```bash
-docker run light-client-whitelabel:latest --network mainnet --config config.yaml
+docker run light-client-whitelabel:latest --network mainnet --project-name TestName
 ```
 
 The `network` parameter is required to connect seamlessly; without it, ensure your config file includes all necessary p2p network components.
