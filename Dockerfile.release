@@ -15,5 +15,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends gettext wget ca
     && chown -R client:client /opt/release
 
 USER client
-ENTRYPOINT ["/opt/release/avail-light-whitelabel"]
-
+ENTRYPOINT ["./avail-light-whitelabel"]
