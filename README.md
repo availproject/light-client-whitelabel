@@ -42,6 +42,7 @@ Once the image is built, you can run the image by supplying params:
 docker run light-client-whitelabel:latest --network mainnet --config config.yaml
 ```
 
+The `network` parameter is required to connect seamlessly; without it, ensure your config file includes all necessary p2p network components.
 The rest of the configuration reference can be found [here](https://github.com/availproject/avail-light/blob/main/client/README.md#configuration-reference).
 
 ## Additional information
