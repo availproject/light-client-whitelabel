@@ -28,6 +28,20 @@ For logging and metrics project name can be set in two ways:
 project_name = "example_project"
 ```
 
+## Running the client using Docker 
+
+To build the docker image you can run the following command:
+
+```bash 
+ docker build -t light-client-whitelabel:latest -f Dockerfile.release .
+```
+
+Once the image is built, you can run the image by supplying params:
+
+```bash
+docker run light-client-whitelabel:latest --network mainnet --config config.yaml
+```
+
 The rest of the configuration reference can be found [here](https://github.com/availproject/avail-light/blob/main/client/README.md#configuration-reference).
 
 ## Additional information

@@ -1,0 +1,18 @@
+FROM --platform=$BUILDPLATFORM ubuntu:20.04
+
+ARG TARGETARCH
+ARG WHITELABEL_TAG=v0.0.1
+ARG WHITELABEL_LC_BIN=https://github.com/availproject/light-client-whitelabel/releases/download/avail-light-whitelabel-$WHITELABEL_TAG/avail-light-whitelabel-linux-$TARGETARCH.tar.gz
+
+WORKDIR /opt/release
+
+RUN apt-get update && apt-get install -y --no-install-recommends gettext wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && adduser --disabled-password --gecos "" --no-create-home --uid 1000 client \
+    && wget --no-check-certificate $WHITELABEL_LC_BIN -O whitelabel-lc.tar.gz \
+    && tar -xvf whitelabel-lc.tar.gz && rm whitelabel-lc.tar.gz \
+    && mv avail-light-whitelabel-linux-$TARGETARCH /opt/release/avail-light-whitelabel \
+    && chown -R client:client /opt/release
+
+USER client
+ENTRYPOINT ["./avail-light-whitelabel"]
