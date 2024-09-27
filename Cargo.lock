@@ -931,8 +931,8 @@ dependencies = [
 
 [[package]]
 name = "avail-light-core"
-version = "1.0.1"
-source = "git+https://github.com/availproject/avail-light.git?tag=avail-light-core-v1.0.1#d4f4e738840acea82bbc67643ceeeaa08099e7ce"
+version = "1.0.2"
+source = "git+https://github.com/availproject/avail-light.git?tag=avail-light-core-v1.0.2#34a0cd52de31478f4f7bcf3bec612e705506bb27"
 dependencies = [
  "async-std",
  "async-stream",

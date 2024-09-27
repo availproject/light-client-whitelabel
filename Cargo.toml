@@ -5,7 +5,7 @@ edition = "2021"
 description = "Avail Whitelabel Light Client"
 
 [dependencies]
-avail-light-core = { git = "https://github.com/availproject/avail-light.git", tag = "avail-light-core-v1.0.1" }
+avail-light-core = { git = "https://github.com/availproject/avail-light.git", tag = "avail-light-core-v1.0.2" }
 avail-rust = { git = "https://github.com/availproject/avail.git", branch = "main" }
 
 better-panic = "0.3.0"
