@@ -2,31 +2,29 @@
 
 use crate::cli::CliOpts;
 use avail_light_core::{
-    api,
-    consts::EXPECTED_SYSTEM_VERSION,
-    data::{self, ClientIdKey, Database, IsFinalitySyncedKey, IsSyncedKey, LatestHeaderKey, DB},
+    api::{self, types::ApiData},
+    data::{
+        self, ClientIdKey, Database, IsFinalitySyncedKey, IsSyncedKey, LatestHeaderKey, RpcNodeKey,
+        SignerNonceKey, DB,
+    },
     light_client::{self, OutputEvent as LcEvent},
     maintenance::{self, OutputEvent as MaintenanceEvent},
     network::{
         self,
         p2p::{self, extract_block_num, OutputEvent as P2pEvent, BOOTSTRAP_LIST_EMPTY_MESSAGE},
-        rpc, Network,
+        rpc::{self, OutputEvent as RpcEvent},
+        Network,
     },
     shutdown::Controller,
     sync_client::SyncClient,
     sync_finality::SyncFinality,
     telemetry::{self, otlp::Metrics, MetricCounter, MetricValue},
     types::{
-        load_or_init_suri, Delay, IdentityConfig, MaintenanceConfig, MultiaddrConfig, SecretKey,
-        Uuid,
+        load_or_init_suri, Delay, IdentityConfig, MaintenanceConfig, PeerAddress, SecretKey, Uuid,
     },
-    utils::{install_panic_hooks, spawn_in_span},
+    utils::{default_subscriber, install_panic_hooks, json_subscriber, spawn_in_span},
 };
-use avail_rust::{
-    avail_core::AppId,
-    kate_recovery::{com::AppData, couscous},
-    sp_core::blake2_128,
-};
+use avail_rust::{avail_core::AppId, kate_recovery::couscous, sp_core::blake2_128};
 use clap::Parser;
 use color_eyre::{
     eyre::{eyre, WrapErr},
@@ -46,10 +44,6 @@ use tokio::{
     },
 };
 use tracing::{error, info, span, trace, warn, Level};
-use utils::{default_subscriber, json_subscriber};
-
-#[cfg(feature = "network-analysis")]
-use avail_light_core::network::p2p::analyzer;
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -58,7 +52,8 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-/// Light Client for Avail Blockchain
+mod cli;
+mod config;
 
 async fn run(
     cfg: RuntimeConfig,
@@ -68,10 +63,9 @@ async fn run(
     client_id: Uuid,
     execution_id: Uuid,
 ) -> Result<()> {
-    let project_name = cfg.project_name.clone();
     let version = clap::crate_version!();
-
-    info!("Running {project_name} Light Client version: {version}.");
+    let rev = env!("GIT_COMMIT_HASH");
+    info!(version, rev, "Running {}", clap::crate_name!());
     info!("Using config: {cfg:?}");
     info!(
         "Avail ss58 address: {}, public key: {}",
@@ -83,7 +77,7 @@ async fn run(
 
     let (p2p_client, p2p_event_loop, p2p_event_receiver) = p2p::init(
         cfg.libp2p.clone(),
-        project_name.clone(),
+        cfg.project_name.clone(),
         id_keys,
         version,
         &cfg.genesis_hash,
@@ -115,21 +109,13 @@ async fn run(
     let cfg_clone = cfg.to_owned();
     spawn_in_span(shutdown.with_cancel(async move {
         info!("Bootstraping the DHT with bootstrap nodes...");
-        let bs_result = p2p_clone
+        if let Err(error) = p2p_clone
             .bootstrap_on_startup(&cfg_clone.libp2p.bootstraps)
-            .await;
-        match bs_result {
-            Ok(_) => {
-                info!("Bootstrap done.");
-            }
-            Err(e) => {
-                warn!("Bootstrap process: {e:?}.");
-            }
+            .await
+        {
+            warn!("Bootstrap unsuccessful: {error:#}");
         }
     }));
-
-    #[cfg(feature = "network-analysis")]
-    spawn_in_span(shutdown.with_cancel(analyzer::start_traffic_analyzer(cfg.libp2p.port, 10)));
 
     let pp = Arc::new(couscous::public_params());
     let raw_pp = pp.to_raw_var_bytes();
@@ -137,24 +123,34 @@ async fn run(
     let public_params_len = hex::encode(raw_pp).len();
     trace!("Public params ({public_params_len}): hash: {public_params_hash}");
 
-    let (rpc_client, rpc_events, rpc_subscriptions) =
-        rpc::init(db.clone(), &cfg.genesis_hash, &cfg.rpc, shutdown.clone()).await?;
+    let (rpc_event_sender, rpc_event_receiver) = broadcast::channel(1000);
+    let (rpc_client, rpc_subscriptions) = rpc::init(
+        db.clone(),
+        &cfg.genesis_hash,
+        &cfg.rpc,
+        shutdown.clone(),
+        rpc_event_sender.clone(),
+    )
+    .await?;
+
+    let account_id = identity_cfg.avail_key_pair.public_key().to_account_id();
+    let client = rpc_client.current_client().await;
+    let nonce = client.api.tx().account_nonce(&account_id).await?;
+    db.put(SignerNonceKey, nonce.try_into()?);
 
     // Subscribing to RPC events before first event is published
-    let publish_rpc_event_receiver = rpc_events.subscribe();
-    let first_header_rpc_event_receiver = rpc_events.subscribe();
-    let client_rpc_event_receiver = rpc_events.subscribe();
+    let publish_rpc_event_receiver = rpc_event_sender.subscribe();
+    let first_header_rpc_event_receiver = rpc_event_sender.subscribe();
+    let client_rpc_event_receiver = rpc_event_sender.subscribe();
 
     // spawn the RPC Network task for Event Loop to run in the background
     // and shut it down, without delays
     let rpc_subscriptions_handle = spawn_in_span(shutdown.with_cancel(shutdown.with_trigger(
         "Subscription loop failure triggered shutdown".to_string(),
         async {
-            let result = rpc_subscriptions.run().await;
-            if let Err(ref err) = result {
-                error!(%err, "Subscription loop ended with error");
+            if let Err(error) = rpc_subscriptions.run().await {
+                error!(%error, "Subscription loop ended with error");
             };
-            result
         },
     )));
 
@@ -172,7 +168,7 @@ async fn run(
             if !rpc_subscriptions_handle.is_finished() {
                 return Err(report);
             }
-            let Ok(Ok(Err(subscriptions_error))) = rpc_subscriptions_handle.await else {
+            let Ok(Err(subscriptions_error)) = rpc_subscriptions_handle.await else {
                 return Err(report);
             };
             return Err(eyre!(subscriptions_error));
@@ -183,7 +179,7 @@ async fn run(
     db.put(LatestHeaderKey, block_header.number);
     let sync_range = cfg.sync_range(block_header.number);
 
-    let ws_clients = api::v2::types::WsClients::default();
+    let ws_clients = api::types::WsClients::default();
 
     // Spawn tokio task which runs one http server for handling RPC
     let server = api::server::Server {
@@ -191,7 +187,6 @@ async fn run(
         cfg: (&cfg).into(),
         identity_cfg: identity_cfg.clone(),
         version: format!("v{}", clap::crate_version!()),
-        network_version: EXPECTED_SYSTEM_VERSION[0].to_string(),
         node_client: rpc_client.clone(),
         ws_clients: ws_clients.clone(),
         shutdown: shutdown.clone(),
@@ -202,7 +197,7 @@ async fn run(
     let (block_tx, block_rx) = broadcast::channel::<avail_light_core::types::BlockVerified>(1 << 7);
 
     let data_rx = cfg.app_id.map(AppId).map(|app_id| {
-        let (data_tx, data_rx) = broadcast::channel::<(u32, AppData)>(1 << 7);
+        let (data_tx, data_rx) = broadcast::channel::<ApiData>(1 << 7);
         spawn_in_span(shutdown.with_cancel(avail_light_core::app_client::run(
             (&cfg).into(),
             db.clone(),
@@ -219,20 +214,20 @@ async fn run(
     });
 
     spawn_in_span(shutdown.with_cancel(api::v2::publish(
-        api::v2::types::Topic::HeaderVerified,
+        api::types::Topic::HeaderVerified,
         publish_rpc_event_receiver,
         ws_clients.clone(),
     )));
 
     spawn_in_span(shutdown.with_cancel(api::v2::publish(
-        api::v2::types::Topic::ConfidenceAchieved,
+        api::types::Topic::ConfidenceAchieved,
         block_tx.subscribe(),
         ws_clients.clone(),
     )));
 
     if let Some(data_rx) = data_rx {
         spawn_in_span(shutdown.with_cancel(api::v2::publish(
-            api::v2::types::Topic::DataVerified,
+            api::types::Topic::DataVerified,
             data_rx,
             ws_clients,
         )));
@@ -302,6 +297,7 @@ async fn run(
     let metric_attributes = vec![
         ("version".to_string(), version.to_string()),
         ("role".to_string(), "lightnode".to_string()),
+        ("origin".to_string(), cfg.origin.to_string()),
         ("peerID".to_string(), peer_id.to_string()),
         ("avail_address".to_string(), identity_cfg.avail_public_key),
         ("network".to_string(), Network::name(&cfg.genesis_hash)),
@@ -313,28 +309,36 @@ async fn run(
         ),
     ];
 
-    let metrics = telemetry::otlp::initialize(project_name, &cfg.origin, cfg.otel.clone())
-        .wrap_err("Unable to initialize OpenTelemetry service")?;
+    let metrics =
+        telemetry::otlp::initialize(cfg.project_name.clone(), &cfg.origin, cfg.otel.clone())
+            .wrap_err("Unable to initialize OpenTelemetry service")?;
+
+    let rpc_host = db
+        .get(RpcNodeKey)
+        .map(|node| node.host)
+        .ok_or_else(|| eyre!("No connected host found"))?;
 
     let mut state = ClientState::new(
         metrics,
         cfg.libp2p.kademlia.operation_mode.into(),
+        rpc_host,
         Multiaddr::empty(),
         metric_attributes,
     );
 
     spawn_in_span(shutdown.with_cancel(async move {
         state
-            .handle_events(p2p_event_receiver, maintenance_receiver, lc_receiver)
+            .handle_events(
+                p2p_event_receiver,
+                maintenance_receiver,
+                lc_receiver,
+                rpc_event_receiver,
+            )
             .await;
     }));
 
     Ok(())
 }
-
-mod cli;
-mod config;
-mod utils;
 
 pub fn load_runtime_config(opts: &CliOpts) -> Result<RuntimeConfig> {
     let mut cfg = if let Some(config_path) = &opts.config {
@@ -352,13 +356,9 @@ pub fn load_runtime_config(opts: &CliOpts) -> Result<RuntimeConfig> {
     if let Some(network) = &opts.network {
         let bootstrap = (network.bootstrap_peer_id(), network.bootstrap_multiaddr());
         cfg.rpc.full_node_ws = network.full_node_ws();
-        cfg.libp2p.bootstraps = vec![MultiaddrConfig::PeerIdAndMultiaddr(bootstrap)];
+        cfg.libp2p.bootstraps = vec![PeerAddress::PeerIdAndMultiaddr(bootstrap)];
         cfg.otel.ot_collector_endpoint = network.ot_collector_endpoint().to_string();
         cfg.genesis_hash = network.genesis_hash().to_string();
-    }
-
-    if let Some(project_name) = &opts.project_name {
-        cfg.project_name = project_name.to_owned();
     }
 
     if let Some(port) = opts.port {
@@ -447,6 +447,7 @@ struct ClientState {
     metrics: Metrics,
     kad_mode: Mode,
     multiaddress: Multiaddr,
+    rpc_host: String,
     metric_attributes: Vec<(String, String)>,
     active_blocks: HashMap<u32, BlockStat>,
 }
@@ -455,6 +456,7 @@ impl ClientState {
     fn new(
         metrics: Metrics,
         kad_mode: Mode,
+        rpc_host: String,
         multiaddress: Multiaddr,
         metric_attributes: Vec<(String, String)>,
     ) -> Self {
@@ -462,6 +464,7 @@ impl ClientState {
             metrics,
             kad_mode,
             multiaddress,
+            rpc_host,
             metric_attributes,
             active_blocks: Default::default(),
         }
@@ -475,10 +478,15 @@ impl ClientState {
         self.kad_mode = value;
     }
 
+    fn update_rpc_host(&mut self, value: String) {
+        self.rpc_host = value;
+    }
+
     fn attributes(&self) -> Vec<(String, String)> {
         let mut attrs = vec![
             ("operating_mode".to_string(), self.kad_mode.to_string()),
             ("multiaddress".to_string(), self.multiaddress.to_string()),
+            ("rpc_host".to_string(), self.rpc_host.to_string()),
         ];
 
         attrs.extend(self.metric_attributes.clone());
@@ -565,6 +573,7 @@ impl ClientState {
         mut p2p_receiver: UnboundedReceiver<P2pEvent>,
         mut maintenance_receiver: UnboundedReceiver<MaintenanceEvent>,
         mut lc_receiver: UnboundedReceiver<LcEvent>,
+        mut rpc_receiver: broadcast::Receiver<RpcEvent>,
     ) {
         self.metrics.count(MetricCounter::Starts, self.attributes());
         loop {
@@ -673,10 +682,16 @@ impl ClientState {
                         },
                         LcEvent::RecordRPCFetchDuration(duration) => {
                             self.metrics.record(MetricValue::RPCFetchDuration(duration));
-                        }
+                        },
                         LcEvent::RecordBlockConfidence(confidence) => {
                             self.metrics.record(MetricValue::BlockConfidence(confidence));
-                        }
+                        },
+                    }
+                }
+
+                Ok(rpc_event) = rpc_receiver.recv() => {
+                    if let RpcEvent::ConnectedHost(host) = rpc_event {
+                        self.update_rpc_host(host);
                     }
                 }
                 // break the loop if all channels are closed
@@ -705,7 +720,7 @@ pub async fn main() -> Result<()> {
         None => load_or_init_suri(&opts.identity)?,
         Some(suri) => suri,
     };
-    let identity_cfg = IdentityConfig::from_suri(suri, opts.avail_passphrase.as_ref())?;
+    let identity_cfg = IdentityConfig::from_suri(suri, opts.avail_passphrase)?;
 
     if opts.clean && Path::new(&cfg.avail_path).exists() {
         info!("Cleaning up local state directory");
