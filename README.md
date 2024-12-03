@@ -28,12 +28,12 @@ For logging and metrics project name can be set in two ways:
 project_name = "example_project"
 ```
 
-## Running the client using Docker 
+## Running the client using Docker
 
 To build the docker image you can run the following command:
 
-```bash 
- docker build -t light-client-whitelabel:latest -f Dockerfile.release .
+```bash
+docker build -t light-client-whitelabel:latest -f Dockerfile.release .
 ```
 
 Once the image is built, you can run the image by supplying params:
